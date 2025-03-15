@@ -1944,6 +1944,35 @@ func decodePrivilegeEvent(resp clientv3.WatchResponse) PrivilegeEvent {
 	return msg
 }
 
+func batchReadMoreData(ch clientv3.WatchChan, event PrivilegeEvent) PrivilegeEvent {
+	timer := time.NewTimer(5 * time.Millisecond)
+	defer timer.Stop()
+	const maxBatchSize = 128
+	for i := 0; i < maxBatchSize; i++ {
+		select {
+		case resp, ok := <-ch:
+			if !ok {
+				return event
+			}
+			tmp := decodePrivilegeEvent(resp)
+			if tmp.All {
+				event.All = true
+			} else {
+				if !event.All {
+					event.UserList = append(event.UserList, tmp.UserList...)
+				}
+			}
+			succ := timer.Reset(5 * time.Millisecond)
+			if !succ {
+				break
+			}
+		case <-timer.C:
+			return event
+		}
+	}
+	return event
+}
+
 // LoadPrivilegeLoop create a goroutine loads privilege tables in a loop, it
 // should be called only once in BootstrapSession.
 func (do *Domain) LoadPrivilegeLoop(sctx sessionctx.Context) error {
@@ -1978,6 +2007,7 @@ func (do *Domain) LoadPrivilegeLoop(sctx sessionctx.Context) error {
 				if ok {
 					count = 0
 					event = decodePrivilegeEvent(resp)
+					event = batchReadMoreData(watchCh, event)
 				} else {
 					if do.ctx.Err() == nil {
 						logutil.BgLogger().Error("load privilege loop watch channel closed")
@@ -1991,6 +2021,7 @@ func (do *Domain) LoadPrivilegeLoop(sctx sessionctx.Context) error {
 				}
 			case <-time.After(duration):
 				event.All = true
+				event = batchReadMoreData(watchCh, event)
 			}
 
 			err := privReloadEvent(do.privHandle, &event)
@@ -2140,18 +2171,18 @@ func (do *Domain) PrivilegeHandle() *privileges.Handle {
 }
 
 // BindingHandle returns domain's bindHandle.
-func (do *Domain) BindingHandle() bindinfo.GlobalBindingHandle {
+func (do *Domain) BindingHandle() bindinfo.BindingHandle {
 	v := do.bindHandle.Load()
 	if v == nil {
 		return nil
 	}
-	return v.(bindinfo.GlobalBindingHandle)
+	return v.(bindinfo.BindingHandle)
 }
 
 // InitBindingHandle create a goroutine loads BindInfo in a loop, it should
 // be called only once in BootstrapSession.
 func (do *Domain) InitBindingHandle() error {
-	do.bindHandle.Store(bindinfo.NewGlobalBindingHandle(do.sysSessionPool))
+	do.bindHandle.Store(bindinfo.NewBindingHandle(do.sysSessionPool))
 	err := do.BindingHandle().LoadFromStorageToCache(true)
 	if err != nil || bindinfo.Lease == 0 {
 		return err
@@ -2196,7 +2227,7 @@ func (do *Domain) globalBindHandleWorkerLoop(owner owner.Manager) {
 				if !owner.IsOwner() {
 					continue
 				}
-				err := do.BindingHandle().GCGlobalBinding()
+				err := do.BindingHandle().GCBinding()
 				if err != nil {
 					logutil.BgLogger().Error("GC bind record failed", zap.Error(err))
 				}
@@ -2409,12 +2440,11 @@ func (do *Domain) StatsHandle() *handle.Handle {
 }
 
 // CreateStatsHandle is used only for test.
-func (do *Domain) CreateStatsHandle(ctx, initStatsCtx sessionctx.Context) error {
+func (do *Domain) CreateStatsHandle(ctx context.Context, initStatsCtx sessionctx.Context) error {
 	h, err := handle.NewHandle(
 		ctx,
 		initStatsCtx,
 		do.statsLease,
-		do.InfoSchema(),
 		do.sysSessionPool,
 		&do.sysProcesses,
 		do.ddlNotifier,
@@ -2445,23 +2475,21 @@ func (do *Domain) SetStatsUpdating(val bool) {
 
 // LoadAndUpdateStatsLoop loads and updates stats info.
 func (do *Domain) LoadAndUpdateStatsLoop(ctxs []sessionctx.Context, initStatsCtx sessionctx.Context) error {
-	if err := do.UpdateTableStatsLoop(ctxs[0], initStatsCtx); err != nil {
+	if err := do.UpdateTableStatsLoop(initStatsCtx); err != nil {
 		return err
 	}
-	do.StartLoadStatsSubWorkers(ctxs[1:])
+	do.StartLoadStatsSubWorkers(ctxs)
 	return nil
 }
 
 // UpdateTableStatsLoop creates a goroutine loads stats info and updates stats info in a loop.
 // It will also start a goroutine to analyze tables automatically.
 // It should be called only once in BootstrapSession.
-func (do *Domain) UpdateTableStatsLoop(ctx, initStatsCtx sessionctx.Context) error {
-	ctx.GetSessionVars().InRestrictedSQL = true
+func (do *Domain) UpdateTableStatsLoop(initStatsCtx sessionctx.Context) error {
 	statsHandle, err := handle.NewHandle(
-		ctx,
+		do.ctx,
 		initStatsCtx,
 		do.statsLease,
-		do.InfoSchema(),
 		do.sysSessionPool,
 		&do.sysProcesses,
 		do.ddlNotifier,

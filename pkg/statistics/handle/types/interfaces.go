@@ -352,10 +352,6 @@ type StatsReadWriter interface {
 	// SaveMetaToStorage saves the stats meta of a table to storage.
 	SaveMetaToStorage(tableID, count, modifyCount int64, source string) (err error)
 
-	// UpdateStatsVersion will set statistics version to the newest TS,
-	// then tidb-server will reload automatic.
-	UpdateStatsVersion() error
-
 	// UpdateStatsMetaVersionForGC updates the version of mysql.stats_meta,
 	// ensuring it is greater than the last garbage collection (GC) time.
 	// The GC worker deletes old stats based on a safe time point,
@@ -441,33 +437,6 @@ type NeededItemTask struct {
 	ResultCh  chan stmtctx.StatsLoadResult
 	Item      model.StatsLoadItem
 	Retry     int
-}
-
-// StatsLoad is used to load stats concurrently
-// TODO(hawkingrei): Our implementation of loading statistics is flawed.
-// Currently, we enqueue tasks that require loading statistics into a channel,
-// from which workers retrieve tasks to process. Then, using the singleflight mechanism,
-// we filter out duplicate tasks. However, the issue with this approach is that it does
-// not filter out all duplicate tasks, but only the duplicates within the number of workers.
-// Such an implementation is not reasonable.
-//
-// We should first filter all tasks through singleflight as shown in the diagram, and then use workers to load stats.
-//
-// ┌─────────▼──────────▼─────────────▼──────────────▼────────────────▼────────────────────┐
-// │                                                                                       │
-// │                                       singleflight                                    │
-// │                                                                                       │
-// └───────────────────────────────────────────────────────────────────────────────────────┘
-//
-//		            │                │
-//	   ┌────────────▼──────┐ ┌───────▼───────────┐
-//	   │                   │ │                   │
-//	   │  syncload worker  │ │  syncload worker  │
-//	   │                   │ │                   │
-//	   └───────────────────┘ └───────────────────┘
-type StatsLoad struct {
-	NeededItemsCh  chan *NeededItemTask
-	TimeoutItemsCh chan *NeededItemTask
 }
 
 // StatsSyncLoad implement the sync-load feature.
