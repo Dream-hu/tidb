@@ -390,7 +390,7 @@ func (src *TableScanTaskSource) adjustStartKey(start, end kv.Key) (adjusted kv.K
 			zap.String("start", hex.EncodeToString(start)),
 			zap.String("end", hex.EncodeToString(end)),
 		)
-		if intest.InTest {
+		if intest.EnableInternalCheck {
 			panic("invalid checkpoint key")
 		}
 		return start, false
@@ -587,6 +587,7 @@ func (w *tableScanWorker) scanRecords(task TableScanTask, sender func(IndexRecor
 		}
 		var done bool
 		for !done {
+			failpoint.InjectCall("beforeGetChunk")
 			srcChk := w.getChunk()
 			done, err = fetchTableScanResult(w.ctx, w.copCtx.GetBase(), rs, srcChk)
 			if err != nil || w.ctx.Err() != nil {
