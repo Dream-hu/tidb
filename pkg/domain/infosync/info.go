@@ -56,6 +56,7 @@ import (
 	"github.com/tikv/client-go/v2/oracle"
 	"github.com/tikv/client-go/v2/tikv"
 	pd "github.com/tikv/pd/client"
+	"github.com/tikv/pd/client/constants"
 	pdhttp "github.com/tikv/pd/client/http"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
@@ -324,7 +325,7 @@ func (is *InfoSyncer) initPlacementManager() {
 func (is *InfoSyncer) initResourceManagerClient(pdCli pd.Client) {
 	var cli pd.ResourceManagerClient = pdCli
 	if pdCli == nil {
-		cli = NewMockResourceManagerClient()
+		cli = NewMockResourceManagerClient(constants.NullKeyspaceID)
 	}
 	failpoint.Inject("managerAlreadyCreateSomeGroups", func(val failpoint.Value) {
 		if val.(bool) {
@@ -1302,6 +1303,16 @@ func GetTiFlashRegionCountFromPD(ctx context.Context, tableID int64, regionCount
 		return errors.Trace(err)
 	}
 	return is.tiflashReplicaManager.GetRegionCountFromPD(ctx, tableID, regionCount)
+}
+
+// GetPlacementRule is a helper function to get placement rule by table id.
+func GetPlacementRule(ctx context.Context, tableID int64) (*pdhttp.Rule, error) {
+	is, err := getGlobalInfoSyncer()
+	if err != nil {
+		return nil, err
+	}
+
+	return is.tiflashReplicaManager.GetPlacementRule(ctx, tableID)
 }
 
 // GetTiFlashStoresStat gets the TiKV store information by accessing PD's api.
